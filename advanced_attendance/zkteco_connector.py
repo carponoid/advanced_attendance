@@ -142,8 +142,19 @@ class ZKTecoConnector:
             frappe.log_error(f"Error clearing logs: {str(e)}", "ZKTeco Connector")
             return False
     
+    def delete_user_from_device(self, user_id):
+        """Delete a user from the device"""
+        try:
+            if self.conn:
+                self.conn.delete_user(uid=user_id)
+                frappe.logger().info(f"Deleted user {user_id} from device {self.device_ip}")
+                return True
+        except Exception as e:
+            frappe.log_error(f"Error deleting user: {str(e)}", "ZKTeco Connector")
+            return False
+    
     @staticmethod
-    def sync_device(device_ip, device_port=4370, clear_after_sync=False):
+    def sync_device(device_ip, device_port=4370, clear_after_sync=False, auto_delete_inactive=False):
         """
         Sync attendance data from a ZKTeco device
         
@@ -151,6 +162,7 @@ class ZKTecoConnector:
             device_ip: IP address of the device
             device_port: Port number
             clear_after_sync: Whether to clear device logs after successful sync
+            auto_delete_inactive: Whether to automatically delete inactive employees from device
             
         Returns:
             dict: Sync results
@@ -200,6 +212,25 @@ class ZKTecoConnector:
                     
                     if not employee:
                         errors.append(f"Employee not found for device ID: {log['user_id']}")
+                        continue
+                    
+                    # Check employee status (NEW: Security Enhancement)
+                    employee_doc = frappe.get_doc('Employee', employee)
+                    
+                    if employee_doc.status != 'Active':
+                        # Employee is inactive (Left, Suspended, etc.)
+                        error_msg = f"Rejected punch from inactive employee: {employee_doc.employee_name} (ID: {log['user_id']}, Status: {employee_doc.status})"
+                        errors.append(error_msg)
+                        frappe.logger().warning(error_msg)
+                        
+                        # Optionally delete user from device
+                        if auto_delete_inactive:
+                            try:
+                                connector.delete_user_from_device(log['user_id'])
+                                frappe.logger().info(f"Auto-deleted inactive user {log['user_id']} from device {device_ip}")
+                            except Exception as e:
+                                frappe.logger().error(f"Failed to auto-delete user {log['user_id']}: {str(e)}")
+                        
                         continue
                     
                     # Determine log type based on status
@@ -270,7 +301,7 @@ class ZKTecoConnector:
 
 
 @frappe.whitelist()
-def sync_biometric_device(device_ip, device_port=4370, clear_after_sync=False):
+def sync_biometric_device(device_ip, device_port=4370, clear_after_sync=False, auto_delete_inactive=False):
     """
     API method to sync a biometric device
     
@@ -278,20 +309,22 @@ def sync_biometric_device(device_ip, device_port=4370, clear_after_sync=False):
         device_ip: IP address of the device
         device_port: Port number (default 4370)
         clear_after_sync: Whether to clear device logs after sync
+        auto_delete_inactive: Whether to automatically delete inactive employees from device
         
     Returns:
         dict: Sync results
     """
-    return ZKTecoConnector.sync_device(device_ip, int(device_port), clear_after_sync)
+    return ZKTecoConnector.sync_device(device_ip, int(device_port), clear_after_sync, auto_delete_inactive)
 
 
 @frappe.whitelist()
-def sync_all_devices(clear_after_sync=False):
+def sync_all_devices(clear_after_sync=False, auto_delete_inactive=False):
     """
     Sync all configured biometric devices
     
     Args:
         clear_after_sync: Whether to clear device logs after successful sync
+        auto_delete_inactive: Whether to automatically delete inactive employees from device
     
     Returns:
         dict: Combined sync results
@@ -301,7 +334,7 @@ def sync_all_devices(clear_after_sync=False):
         devices = frappe.get_all(
             'Biometric Device Settings',
             filters={'enabled': 1},
-            fields=['name', 'device_ip', 'device_port']
+            fields=['name', 'device_ip', 'device_port', 'auto_delete_inactive_users']
         )
         
         if not devices:
@@ -317,10 +350,14 @@ def sync_all_devices(clear_after_sync=False):
         
         for device in devices:
             try:
+                # Use device-specific setting if available, otherwise use parameter
+                device_auto_delete = device.get('auto_delete_inactive_users', 0) or auto_delete_inactive
+                
                 result = ZKTecoConnector.sync_device(
                     device.device_ip, 
                     device.device_port,
-                    clear_after_sync
+                    clear_after_sync,
+                    device_auto_delete
                 )
                 results.append({
                     'device': device.name,
