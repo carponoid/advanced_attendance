@@ -1,0 +1,157 @@
+{% extends "templates/web.html" %}
+
+{% block title %}Clock In{% endblock %}
+
+{% block page_content %}
+<div class="container" style="max-width: 480px; margin-top: 40px;">
+  <div class="card shadow-sm border-0" style="border-radius: 16px;">
+    <div class="card-body">
+      <h2 class="card-title mb-1 text-center">Clock In / Out</h2>
+      <p class="text-muted text-center mb-3" id="employee-info">Loading employee...</p>
+
+      <div class="text-center mb-3">
+        <div id="status-text" class="small text-muted"></div>
+      </div>
+
+      <div class="d-grid gap-3 mb-3">
+        <button id="btn-in" class="btn btn-primary btn-lg" style="border-radius: 999px;">
+          CLOCK IN
+        </button>
+        <button id="btn-out" class="btn btn-outline-primary btn-lg" style="border-radius: 999px;">
+          CLOCK OUT
+        </button>
+      </div>
+
+      <div id="message" class="text-center small"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const employeeInfo = document.getElementById("employee-info");
+    const statusText = document.getElementById("status-text");
+    const message = document.getElementById("message");
+    const btnIn = document.getElementById("btn-in");
+    const btnOut = document.getElementById("btn-out");
+
+    // Fetch employee info
+    frappe.call({
+      method: "advanced_attendance.api.get_employee_for_user",
+      callback: function(r) {
+        if (r.message && r.message.name) {
+          employeeInfo.innerText = r.message.employee_name + " (" + r.message.name + ")";
+        } else {
+          employeeInfo.innerText = "No Employee linked to this user.";
+          btnIn.disabled = true;
+          btnOut.disabled = true;
+        }
+      }
+    });
+
+    function showMessage(text, isError) {
+      message.innerText = text;
+      message.style.color = isError ? "red" : "green";
+    }
+
+    function setLoading(isLoading, direction) {
+      const label = direction === "IN" ? "CLOCK IN" : "CLOCK OUT";
+      if (isLoading) {
+        statusText.innerText = "Requesting GPS location...";
+        if (direction === "IN") {
+          btnIn.disabled = true;
+          btnIn.innerText = "Please wait...";
+        } else {
+          btnOut.disabled = true;
+          btnOut.innerText = "Please wait...";
+        }
+      } else {
+        statusText.innerText = "";
+        btnIn.disabled = false;
+        btnOut.disabled = false;
+        btnIn.innerText = "CLOCK IN";
+        btnOut.innerText = "CLOCK OUT";
+      }
+    }
+
+    function buildFingerprint() {
+      try {
+        return JSON.stringify({
+          userAgent: navigator.userAgent,
+          language: navigator.language,
+          platform: navigator.platform,
+          screen: {
+            width: window.screen.width,
+            height: window.screen.height
+          },
+          timezoneOffset: new Date().getTimezoneOffset()
+        });
+      } catch (e) {
+        return "{}";
+      }
+    }
+
+    function doCheckin(direction) {
+      if (!navigator.geolocation) {
+        showMessage("This device does not support geolocation.", true);
+        return;
+      }
+
+      setLoading(true, direction);
+
+      navigator.geolocation.getCurrentPosition(function (pos) {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        const acc = pos.coords.accuracy;
+
+        statusText.innerText = "Submitting " + direction + "...";
+
+        frappe.call({
+          method: "advanced_attendance.api.mobile_checkin",
+          args: {
+            direction: direction,
+            lat: lat,
+            lng: lng,
+            accuracy: acc,
+            fingerprint_raw: buildFingerprint()
+          },
+          freeze: false,
+          callback: function(r) {
+            setLoading(false, direction);
+            if (r.message && r.message.status === "success") {
+              const within = r.message.within_geofence ? "within geofence" : "OUTSIDE geofence";
+              showMessage("Success: " + direction + " recorded (" + within + ").", false);
+            } else {
+              showMessage("An unexpected error occurred.", true);
+            }
+          },
+          error: function(err) {
+            setLoading(false, direction);
+            showMessage("Server error: " + (err.message || "Unknown error"), true);
+          }
+        });
+
+      }, function (err) {
+        setLoading(false, direction);
+        if (err.code === 1) {
+          showMessage("Location permission denied. Enable location to clock in/out.", true);
+        } else {
+          showMessage("Unable to get location. Please try again.", true);
+        }
+      }, {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0
+      });
+    }
+
+    btnIn.addEventListener("click", function () {
+      doCheckin("IN");
+    });
+
+    btnOut.addEventListener("click", function () {
+      doCheckin("OUT");
+    });
+  });
+</script>
+{% endblock %}

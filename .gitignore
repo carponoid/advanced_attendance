@@ -1,0 +1,13 @@
+*.pyc
+*.egg-info
+*.swp
+*.swo
+.DS_Store
+__pycache__/
+*.py[cod]
+*$py.class
+.vscode/
+.idea/
+*.log
+node_modules/
+.env
